@@ -1,0 +1,268 @@
+name: Secure Build Engine
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "The branch, tag or SHA to checkout"
+        required: false
+        type: string
+        default: "" # Default to empty so it falls back to github.sha
+    secrets:
+      PMDT: { required: true }
+
+jobs:
+
+  # 1. First Line of Defense: Rate Limiter
+  check-rate-limit:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+      actions: read
+    steps:
+      - name: Rate Limit Check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const user = context.payload.sender.login;
+            const ONE_HOUR_AGO = new Date(Date.now() - 60 * 60 * 1000);
+  
+            // Step 1: Check PR creation rate (original logic, adjusted limit)
+            const { data: pulls } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              sort: 'created',
+              direction: 'desc',
+              per_page: 100  // Increase for better coverage
+            });
+  
+            const recentPRs = pulls.filter(pr =>
+              pr.user.login === user &&
+              new Date(pr.created_at) > ONE_HOUR_AGO
+            );
+  
+            // Limit: 3 PRs per hour
+            if (recentPRs.length > 3) {
+              console.log(`User ${user} exceeded PR rate limit.`);
+  
+              if (context.issue.number) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: "⚠️ **Rate Limit Exceeded**\nYou have opened too many PRs recently. This PR is auto-closed to conserve resources."
+                });
+  
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  state: 'closed'
+                });
+              }
+  
+              core.setFailed("PR rate limit exceeded.");
+              return;  // Exit early if PR limit hit
+            }
+  
+            // Step 2: Check workflow run triggers (new logic with pagination)
+            let page = 1;
+            let allRuns = [];
+            while (true) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+                page: page
+              });
+              allRuns = allRuns.concat(runs.workflow_runs);
+              if (runs.workflow_runs.length < 100) break;
+              page++;
+            }
+  
+            const userRecentRuns = allRuns.filter(run => {
+              const runDate = new Date(run.created_at);
+              return run.triggering_actor?.login === user && runDate > ONE_HOUR_AGO;
+            });
+  
+            // Limit: 5 runs per hour
+            if (userRecentRuns.length > 5) {
+              console.log(`User ${user} exceeded execution rate limit.`);
+  
+              if (context.issue.number) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: "⚠️ **Resource Protection Alert**\nYou have triggered too many workflow runs in a short period. This PR is auto-closed to conserve resources. Please wait an hour before retrying."
+                });
+  
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  state: 'closed'
+                });
+              }
+  
+              core.setFailed("Execution rate limit exceeded.");
+            }
+
+  validate-file-paths:
+    needs: check-rate-limit  # <--- FIX: PREVENTS DoS / RESOURCE EXHAUSTION
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Check Changed Files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            // Define allowed regex: Must start with src/ or test/ and end with .java
+            // Example: src/main/java/App.java or test/suite/Test.java
+            const allowedPattern = /^(src|test)\/.*\.java$/;
+            
+            const invalidFiles = files.filter(file => !allowedPattern.test(file.filename));
+
+            if (invalidFiles.length > 0) {
+              const fileList = invalidFiles.map(f => `\`${f.filename}\``).join(', ');
+              const errorMessage = `⚠️ **Strict Policy Violation**\n\nThis repository only accepts changes to Java source files within \`src/\` and \`test/\` folders.\n\n**Invalid files found:**\n${fileList}`;
+
+              console.log("Invalid files detected:", invalidFiles.map(f => f.filename));
+
+              // Add a comment to the PR
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: errorMessage
+              });
+
+              // Optional: Close the PR automatically
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                state: 'closed'
+              });
+
+              core.setFailed("PR contains restricted file changes.");
+            } else {
+              console.log("All changed files are valid Java source/test files.");
+            }          
+
+  petra-verifier:
+    needs: validate-file-paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+            ref: ${{ inputs.ref || github.sha }}
+            fetch-depth: 0
+            
+      - name: Fetch Trusted Base
+        # This makes sure the 'base' SHA is available to be 'resolved' by Git
+        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+
+      - name: Install XML Tools
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+        
+      - name: Verify POM Integrity
+        env:
+          GOLDEN_POM: |
+            <?xml version="1.0" encoding="UTF-8"?>
+            <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+              <modelVersion>4.0.0</modelVersion>
+            
+              <groupId>com.cognitionbox.petra.examples</groupId>
+              <artifactId>petra-examples</artifactId>
+              <version>1.0-SNAPSHOT</version>
+              <build>
+                  <plugins>
+                      <plugin>
+                          <groupId>org.apache.maven.plugins</groupId>
+                          <artifactId>maven-compiler-plugin</artifactId>
+                          <configuration>
+                              <source>8</source>
+                              <target>8</target>
+                          </configuration>
+                      </plugin>
+                       <plugin>
+                           <groupId>org.apache.maven.plugins</groupId>
+                           <artifactId>maven-surefire-plugin</artifactId>
+                           <version>3.2.5</version> <configuration>
+                               <includes>
+                                   <include>**/*Verification.java</include>
+                               </includes>
+                           </configuration>
+                       </plugin>
+                  </plugins>
+              </build>
+            
+              <distributionManagement>
+                  <repository>
+                      <id>github</id>
+                      <name>GitHub Packages</name>
+                      <url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url>
+                  </repository>
+              </distributionManagement>
+            
+              <dependencies>
+                  <dependency>
+                     <groupId>com.cognitionbox.petra</groupId>
+                     <artifactId>petra-verifier</artifactId>
+                     <version>0.0.3-SNAPSHOT</version>
+                   </dependency>
+              </dependencies>
+            
+            </project>
+        run: |
+          # Write the environment variable directly to a file
+          # The variable does not contain the YAML's leading spaces
+          echo "$GOLDEN_POM" > expected_pom.xml
+
+          # Format both files into a "Canonical" format (removes noise, standardizes indents)
+          xmllint --format pom.xml > normalized_current.xml
+          xmllint --format expected_pom.xml > normalized_expected.xml
+          
+          # Compare the normalized versions
+          if ! diff -q normalized_current.xml normalized_expected.xml > /dev/null; then
+            echo "❌ SECURITY ALERT: pom.xml content mismatch."
+            exit 1
+          fi
+          
+          echo "✅ Infrastructure Integrity Verified."
+        
+
+      - name: Set up JDK & Cache
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+      
+      - name: Maven Build
+        run: |
+          mkdir -p ~/.m2
+          echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd"><activeProfiles><activeProfile>github</activeProfile></activeProfiles><profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url><snapshots><enabled>true</enabled></snapshots></repository></repositories></profile></profiles><servers><server><id>github</id><username>petracode-labs</username><password>${{ secrets.PMDT }}</password></server></servers></settings>' > ~/.m2/settings.xml
+          # mvn clean test -X -DforkCount=0 -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
+          mvn clean test -Dincludes="**/*Verification.java"
+
+      - name: Test Summary
+        uses: test-summary/action@v2
+        with:
+          # This catches the XML that now contains the logs
+          paths: "**/target/*-reports/TEST-*.xml"
+          show: "all" # Shows logs for passed and failed tests
+        if: always()
