@@ -131,11 +131,22 @@ jobs:
             // Example: src/main/java/App.java or test/suite/Test.java
             const allowedPattern = /^(src|test)\/.*\.java$/;
             
-            const invalidFiles = files.filter(file => !allowedPattern.test(file.filename));
+            // Prevents overriding key security files by adding new implementation and changing import, by blanket ban of specific security filenames (ignores folder structure)
+            const restrictedFiles = ['PetraVerification.java', 'PetraVerificationSecurityGate.java', 'PetraInternalConfigValidator.java'];
+            
+            // Prevents overriding ANY other class hidden in the server dependency
+            const restrictedNamespace = /com\/cognitionbox\/petra\/ast\//;
+            
+            // Check for invalid paths OR attempts to shadow the verification base classes/namespaces
+            const invalidFiles = files.filter(file => 
+              !allowedPattern.test(file.filename) || 
+              restrictedFiles.some(f => file.filename.endsWith(f)) ||
+              restrictedNamespace.test(file.filename)
+            );
 
             if (invalidFiles.length > 0) {
               const fileList = invalidFiles.map(f => `\`${f.filename}\``).join(', ');
-              const errorMessage = `⚠️ **Strict Policy Violation**\n\nThis repository only accepts changes to Java source files within \`src/\` and \`test/\` folders.\n\n**Invalid files found:**\n${fileList}`;
+              const errorMessage = `⚠️ **Strict Policy Violation**\n\nThis repository only accepts changes to Java source files within \`src/\` and \`test/\` folders.\n\nOverriding core \`petra-verifier\` security classes or namespaces is strictly prohibited.\n\n\n**Invalid files found:**\n${fileList}`;
 
               console.log("Invalid files detected:", invalidFiles.map(f => f.filename));
 
@@ -168,6 +179,7 @@ jobs:
         with:
             ref: ${{ inputs.ref || github.sha }}
             fetch-depth: 0
+            allow-unsafe-pr-checkout: true
             
       - name: Fetch Trusted Base
         # This makes sure the 'base' SHA is available to be 'resolved' by Git
