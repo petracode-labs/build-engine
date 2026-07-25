@@ -121,14 +121,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const { data: files } = await github.rest.pulls.listFiles({
+            // FIX: Paginate to ensure attackers cannot hide restricted files past the 30-file limit
+            const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.payload.pull_request.number,
             });
 
             // Define allowed regex: Must start with src/ or test/ and end with .java
-            // Example: src/main/java/App.java or test/suite/Test.java
             const allowedPattern = /^(src|test)\/.*\.java$/;
             
             // Prevents overriding key security files by adding new implementation and changing import, by blanket ban of specific security filenames (ignores folder structure)
@@ -143,7 +143,7 @@ jobs:
               restrictedFiles.some(f => file.filename.endsWith(f)) ||
               restrictedNamespace.test(file.filename)
             );
-
+            
             if (invalidFiles.length > 0) {
               const fileList = invalidFiles.map(f => `\`${f.filename}\``).join(', ');
               const errorMessage = `⚠️ **Strict Policy Violation**\n\nThis repository only accepts changes to Java source files within \`src/\` and \`test/\` folders.\n\nOverriding core \`petra-verifier\` security classes or namespaces is strictly prohibited.\n\n\n**Invalid files found:**\n${fileList}`;
@@ -273,8 +273,15 @@ jobs:
         run: |
           mkdir -p ~/.m2
           echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd"><activeProfiles><activeProfile>github</activeProfile></activeProfiles><profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url><snapshots><enabled>true</enabled></snapshots></repository></repositories></profile></profiles><servers><server><id>github</id><username>petracode-labs</username><password>${{ secrets.PMDT }}</password></server></servers></settings>' > ~/.m2/settings.xml
-          # mvn clean test -X -DforkCount=0 -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
-          mvn -B -ntp clean test -Dincludes="**/*Verification.java"
+          
+          # 1. Fetch dependencies and compile safely
+          mvn -B -ntp clean test-compile
+          
+          # 2. SECURE: Destroy the token before executing untrusted code
+          rm ~/.m2/settings.xml
+          
+          # 3. Execute tests (using --offline prevents tests from downloading new artifacts or exfiltrating data via Maven)
+          mvn -B -ntp test -Dincludes="**/*Verification.java" --offline
 
       - name: Test Summary
         uses: test-summary/action@v2
