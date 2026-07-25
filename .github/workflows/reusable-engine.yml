@@ -281,8 +281,8 @@ jobs:
           # 2. SECURE: Destroy the token before executing untrusted code
           rm ~/.m2/settings.xml
           
-          # 3. Execute tests (using --offline prevents tests from downloading new artifacts or exfiltrating data via Maven)
-          mvn -B -ntp test -Dincludes="**/*Verification.java"
+          # 3. Execute tests with forkCount=0 and GIT_BASE_SHA parameters
+          mvn -B -ntp test -DforkCount=0 -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
 
       - name: Test Summary
         uses: test-summary/action@v2
