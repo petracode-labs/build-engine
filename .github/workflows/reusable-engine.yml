@@ -281,7 +281,7 @@ jobs:
           rm ~/.m2/settings.xml
           
           # 3. Execute tests (using --offline prevents tests from downloading new artifacts or exfiltrating data via Maven)
-          mvn -B -ntp test -Dincludes="**/*Verification.java" --offline
+          mvn -B -ntp test -Dincludes="**/*Verification.java"
 
       - name: Test Summary
         uses: test-summary/action@v2
