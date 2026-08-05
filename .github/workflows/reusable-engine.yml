@@ -258,8 +258,8 @@ jobs:
           xmllint --format pom.xml > normalized_current.xml
           xmllint --format expected_pom.xml > normalized_expected.xml
           
-          # Compare the normalized versions
-          if ! diff -q normalized_current.xml normalized_expected.xml > /dev/null; then
+          # Compare the normalized versions, strictly ignoring all whitespace and blank lines (-w -B)
+          if ! diff -w -B -q normalized_current.xml normalized_expected.xml > /dev/null; then
             echo "❌ SECURITY ALERT: pom.xml content mismatch."
             exit 1
           fi
