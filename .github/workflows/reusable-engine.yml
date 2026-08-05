@@ -190,6 +190,11 @@ jobs:
         
       - name: Verify POM Integrity
         env:
+          GOLDEN_POLICY: |
+            grant codeBase "file:${user.dir}/-" {
+                permission java.util.PropertyPermission "*", "read";
+                permission java.io.FilePermission "${user.dir}/-", "read";
+            };
           GOLDEN_POM: |
             <?xml version="1.0" encoding="UTF-8"?>
             <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -250,6 +255,16 @@ jobs:
             
             </project>
         run: |
+          # 1. Verify Sandbox Policy Integrity
+          echo "$GOLDEN_POLICY" > expected_policy.xml
+          if ! diff -w -B -q expected_policy.xml .github/sandbox.policy > /dev/null; then
+            echo "❌ SECURITY ALERT: .github/sandbox.policy content mismatch."
+            exit 1
+          fi
+
+          echo "✅ Infrastructure Integrity Verified (POM & Security Policy)."
+
+          # 2. Verify POM Integrity
           echo "$GOLDEN_POM" > expected_pom.xml
 
           # Format XML into standard structural lines
@@ -273,18 +288,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           cache: 'maven'
-
-      - name: Generate JVM Security Policy
-        run: |
-          mkdir -p .github
-          cat << 'EOF' > .github/sandbox.policy
-          // Grant only read access to the local workspace
-          grant codeBase "file:${user.dir}/-" {
-              permission java.util.PropertyPermission "*", "read";
-              permission java.io.FilePermission "${user.dir}/-", "read";
-          };
-          // Explicitly NO execute permissions and NO class loader permissions granted
-          EOF
       
       - name: Maven Build
         run: |
