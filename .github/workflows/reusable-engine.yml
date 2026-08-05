@@ -250,17 +250,19 @@ jobs:
             
             </project>
         run: |
-          # Write the environment variable directly to a file
-          # The variable does not contain the YAML's leading spaces
           echo "$GOLDEN_POM" > expected_pom.xml
 
-          # Format both files into a "Canonical" format (removes noise, standardizes indents)
-          xmllint --format pom.xml > normalized_current.xml
-          xmllint --format expected_pom.xml > normalized_expected.xml
+          # Strip ALL whitespace (spaces, tabs, newlines, carriage returns) from both files.
+          # This completely neutralizes any YAML indentation or OS line-ending differences.
+          tr -d '[:space:]' < pom.xml > min_current.xml
+          tr -d '[:space:]' < expected_pom.xml > min_expected.xml
           
-          # Compare the normalized versions, strictly ignoring all whitespace and blank lines (-w -B)
-          if ! diff -w -B -q normalized_current.xml normalized_expected.xml > /dev/null; then
+          # Compare the completely minified versions
+          if ! diff -q min_current.xml min_expected.xml > /dev/null; then
             echo "❌ SECURITY ALERT: pom.xml content mismatch."
+            echo "--- Debug: Showing exact character differences (Expected vs Actual) ---"
+            # Printing the diff without the -q flag so you can see exactly which word/character is failing if it happens again
+            diff min_expected.xml min_current.xml || true
             exit 1
           fi
           
