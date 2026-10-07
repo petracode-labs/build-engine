@@ -220,6 +220,9 @@ jobs:
                 permission java.lang.RuntimePermission "getClassLoader";
                 permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
                 permission java.lang.RuntimePermission "accessSystemModules";
+
+                // Thread Management (Allows clean background shutdown, prevents ugly logs)
+                permission java.lang.RuntimePermission "modifyThread";
             };
           GOLDEN_POM: |
             <?xml version="1.0" encoding="UTF-8"?>
