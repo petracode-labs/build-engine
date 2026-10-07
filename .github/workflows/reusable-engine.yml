@@ -226,6 +226,7 @@ jobs:
                                <argLine>
                                    -Djava.security.manager
                                    -Djava.security.policy=${project.basedir}/.github/sandbox.policy
+                                   -Dmaven.repo.local=${settings.localRepository}
                                </argLine>
                                <useManifestOnlyJar>false</useManifestOnlyJar>
                            </configuration>
