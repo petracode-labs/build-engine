@@ -185,8 +185,8 @@ jobs:
         # This makes sure the 'base' SHA is available to be 'resolved' by Git
         run: git fetch origin ${{ github.event.pull_request.base.ref }}
 
-      - name: Install XML Tools
-        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+      - name: Install XML and C++ Tools
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils g++
         
       - name: Verify POM Integrity
         env:
