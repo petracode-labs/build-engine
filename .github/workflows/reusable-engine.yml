@@ -343,7 +343,7 @@ jobs:
           EOF
           
           # 2. Fetch dependencies and compile
-          mvn -B -U clean test-compile
+          mvn -ntp -B -U clean test-compile
           
           # 3. SECURE & SIMPLIFY: Overwrite settings.xml to drop the <servers> block (the token).
           # Leaving the <repository> block intact satisfies Maven's cache tracker so we don't need offline mode.
@@ -356,7 +356,7 @@ jobs:
           unset PMDT
           
           # 4. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
-          mvn -B test -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
+          mvn -ntp -B test -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
           
       - name: Test Summary
         uses: test-summary/action@v2
