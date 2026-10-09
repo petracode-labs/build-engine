@@ -332,26 +332,32 @@ jobs:
           PMDT: ${{ secrets.PMDT }}
         run: |
           mkdir -p ~/.m2
-          echo "${#PMDT} chars read."
-          echo "<settings xmlns=\"http://maven.apache.org/SETTINGS/1.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd\"><activeProfiles><activeProfile>github</activeProfile></activeProfiles><profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url><releases><enabled>true</enabled><updatePolicy>always</updatePolicy></releases><snapshots><enabled>false</enabled></snapshots></repository></repositories></profile></profiles><servers><server><id>github</id><username>petracode-labs</username><password>${PMDT}</password></server></servers></settings>" > ~/.m2/settings.xml
           
-          # 1. Fetch dependencies and compile safely
-          # CHANGED: 'test-compile' -> 'test -DskipTests' to ensure the Surefire plugin is fully downloaded before going offline
-          mvn -X -B -U -ntp clean test -DskipTests \
-            -Daether.remoteRepositoryFilter.prefixes=false \
-            -Daether.remoteRepositoryFilter.prefixes.skipped=true \
-            -Daether.remoteRepositoryFilter.prefixes.resolvePrefixFiles=false \
-            -Daether.remoteRepositoryFilter.groupId=false \
-            -Daether.remoteRepositoryFilter.groupId.skipped=true
-
-          # 2. SECURE: Destroy the token AND wipe it from memory before untrusted code runs
-          rm ~/.m2/settings.xml
+          # 1. Create settings.xml WITH the token
+          cat <<EOF > ~/.m2/settings.xml
+          <settings>
+            <profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url></repository></repositories></profile></profiles>
+            <activeProfiles><activeProfile>github</activeProfile></activeProfiles>
+            <servers><server><id>github</id><username>petracode-labs</username><password>${PMDT}</password></server></servers>
+          </settings>
+          EOF
+          
+          # 2. Fetch dependencies and compile
+          mvn -B -U clean test-compile
+          
+          # 3. SECURE & SIMPLIFY: Overwrite settings.xml to drop the <servers> block (the token).
+          # Leaving the <repository> block intact satisfies Maven's cache tracker so we don't need offline mode.
+          cat <<EOF > ~/.m2/settings.xml
+          <settings>
+            <profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url></repository></repositories></profile></profiles>
+            <activeProfiles><activeProfile>github</activeProfile></activeProfiles>
+          </settings>
+          EOF
           unset PMDT
           
-          # 3. Execute tests safely in an isolated, sandboxed JVM fork
-          # CHANGED: Added '-o' (offline mode) to prevent Maven from trying to re-verify cached dependencies without credentials
-          mvn -o -X -B -ntp test -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
-
+          # 4. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
+          mvn -B test -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
+          
       - name: Test Summary
         uses: test-summary/action@v2
         with:
