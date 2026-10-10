@@ -174,6 +174,7 @@ jobs:
   petra-verifier:
     needs: validate-file-paths
     runs-on: ubuntu-latest
+    timeout-minutes: 1
     steps:
       - uses: actions/checkout@v4
         with:
@@ -191,13 +192,15 @@ jobs:
       - name: Verify POM Integrity
         env:
           GOLDEN_POLICY: |
-            // 1. Whitelist the entire locked-down Maven cache (Safe because GOLDEN_POM prevents attackers from adding malicious JARs)
+            // 1. Whitelist the entire locked-down Maven cache
             grant codeBase "file:${maven.repo.local}/-" {
                 permission java.security.AllPermission;
             };
             
-            // 2. The PR Sandbox (Zero Permissions Granted)
-            grant codeBase "file:${user.dir}/-" {
+            // 2. The PR Sandbox (Restricted to read-only property baseline)
+            grant {
+                // Required by the JDK's internal NIO and Compiler classes
+                permission java.util.PropertyPermission "*", "read";
             };
           GOLDEN_POM: |
             <?xml version="1.0" encoding="UTF-8"?>
@@ -252,7 +255,7 @@ jobs:
                   <dependency>
                      <groupId>com.cognitionbox.petra</groupId>
                      <artifactId>petra-verifier</artifactId>
-                     <version>0.1.5</version>
+                     <version>0.1.6</version>
                    </dependency>
                    <dependency>
                       <groupId>com.fasterxml.jackson.core</groupId>
