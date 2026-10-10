@@ -253,11 +253,6 @@ jobs:
                                <includes>
                                    <include>**/*Verification.java</include>
                                </includes>
-                               <argLine>
-                                   -Djava.security.manager
-                                   -Djava.security.policy=${project.basedir}/.github/sandbox.policy
-                                   -Dmaven.repo.local=${settings.localRepository}
-                               </argLine>
                                <useManifestOnlyJar>false</useManifestOnlyJar>
                            </configuration>
                        </plugin>
@@ -283,7 +278,7 @@ jobs:
                   <dependency>
                      <groupId>com.cognitionbox.petra</groupId>
                      <artifactId>petra-verifier</artifactId>
-                     <version>0.1.3</version>
+                     <version>0.1.4</version>
                    </dependency>
                    <dependency>
                       <groupId>com.fasterxml.jackson.core</groupId>
@@ -356,7 +351,10 @@ jobs:
           unset PMDT
           
           # 4. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
-          mvn -ntp -B test -DGIT_BASE_SHA=${{ github.event.pull_request.base.sha }} -Dincludes="**/*Verification.java"
+          mvn -ntp -B test \
+            -DargLine="-Djava.security.manager -Djava.security.policy==.github/sandbox.policy -Dmaven.repo.local=\${settings.localRepository}" \
+            -DGIT_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+            -Dincludes="**/*Verification.java"
           
       - name: Test Summary
         uses: test-summary/action@v2
