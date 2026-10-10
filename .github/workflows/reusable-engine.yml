@@ -192,7 +192,8 @@ jobs:
       - name: Verify POM Integrity
         env:
           GOLDEN_POLICY: |
-            // 1. Whitelist the entire locked-down Maven cache
+            // 1. Whitelist the entire locked-down Maven cache for the framework
+            // (This grants AllPermission to the trusted Petra framework code)
             grant codeBase "file:${maven.repo.local}/-" {
                 permission java.security.AllPermission;
             };
@@ -205,9 +206,13 @@ jobs:
                 // Required for the dynamic compiler to resolve system classes
                 permission java.io.FilePermission "${java.home}/-", "read";
                 
-                // Required for the dynamic compiler to write and read intermediate .class files
+                // Required for the dynamic compiler to write intermediate .class files
                 permission java.io.FilePermission "${java.io.tmpdir}/-", "read,write,delete";
                 permission java.io.FilePermission "/tmp/-", "read,write,delete";
+                
+                // NEW: Required for the dynamic compiler to scan the classpath
+                // (Safe because GOLDEN_POM prevents malicious dependency injection)
+                permission java.io.FilePermission "${maven.repo.local}/-", "read";
             };
           GOLDEN_POM: |
             <?xml version="1.0" encoding="UTF-8"?>
@@ -333,8 +338,13 @@ jobs:
           </settings>
           EOF
           unset PMDT
+
+          # 4. EXECUTING THE SECURITY GATE (PRE-TEST)
+          # This scans all PR code for malicious payloads, File I/O, and static blocks.
+          # If it fails, it halts the workflow before the untrusted code is ever executed!
+          mvn exec:java -Dexec.mainClass="com.cognitionbox.petra.ast.interp.PetraVerificationSecurityGate" -Dexec.classpathScope=test
           
-          # 4. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
+          # 5. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
           mvn -ntp -B test \
             -DargLine="-Djava.security.manager -Djava.security.policy==.github/sandbox.policy -Dmaven.repo.local=\${settings.localRepository}" \
             -DGIT_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
