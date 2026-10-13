@@ -15,6 +15,7 @@ jobs:
   # 1. First Line of Defense: Rate Limiter
   check-rate-limit:
     runs-on: ubuntu-latest
+    environment: manual-gate
     permissions:
       pull-requests: write
       issues: write
