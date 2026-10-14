@@ -132,13 +132,13 @@ jobs:
             // Define allowed regex: Must start with src/ or test/ and end with .java
             // ONLY allow files within the examples namespace. 
             // Blocks org.junit.*, java.lang.*, and other framework shadowing.
-            const allowedPattern = /^(src|test)\/.*\/com\/cognitionbox\/petra\/.*\.java$/;
+            const allowedPattern = /^(src|test)\/.*\/com\/cognitionbox\/petra\/stdlib\/.*\.java$/;
             
             // Prevents overriding key security files by adding new implementation and changing import, by blanket ban of specific security filenames (ignores folder structure)
             const restrictedFiles = ['PetraVerification.java', 'PetraVerificationSecurityGate.java', 'PetraInternalConfigValidator.java'];
             
             // Prevents overriding ANY other class hidden in the server dependency
-            const restrictedNamespace = /com\/cognitionbox\/petra\//;
+            const restrictedNamespace = /com\/cognitionbox\/petra\/ast\//;
             
             // Check for invalid paths OR attempts to shadow the verification base classes/namespaces
             const invalidFiles = files.filter(file => 
