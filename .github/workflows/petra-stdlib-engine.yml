@@ -1,0 +1,379 @@
+name: Secure Build Engine
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "The branch, tag or SHA to checkout"
+        required: false
+        type: string
+        default: "" # Default to empty so it falls back to github.sha
+    secrets:
+      PMDT: { required: true }
+
+jobs:
+
+  # 1. First Line of Defense: Rate Limiter
+  check-rate-limit:
+    runs-on: ubuntu-latest
+    environment: manual-gate
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+      actions: read
+    steps:
+      - name: Rate Limit Check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const user = context.payload.sender.login;
+            const ONE_HOUR_AGO = new Date(Date.now() - 60 * 60 * 1000);
+  
+            // Step 1: Check PR creation rate (original logic, adjusted limit)
+            const { data: pulls } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              sort: 'created',
+              direction: 'desc',
+              per_page: 100  // Increase for better coverage
+            });
+  
+            const recentPRs = pulls.filter(pr =>
+              pr.user.login === user &&
+              new Date(pr.created_at) > ONE_HOUR_AGO
+            );
+  
+            // Limit: 3 PRs per hour
+            if (recentPRs.length > 3) {
+              console.log(`User ${user} exceeded PR rate limit.`);
+  
+              if (context.issue.number) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: "⚠️ **Rate Limit Exceeded**\nYou have opened too many PRs recently. This PR is auto-closed to conserve resources."
+                });
+  
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  state: 'closed'
+                });
+              }
+  
+              core.setFailed("PR rate limit exceeded.");
+              return;  // Exit early if PR limit hit
+            }
+  
+            // Step 2: Check workflow run triggers (new logic with pagination)
+            let page = 1;
+            let allRuns = [];
+            while (true) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+                page: page
+              });
+              allRuns = allRuns.concat(runs.workflow_runs);
+              if (runs.workflow_runs.length < 100) break;
+              page++;
+            }
+  
+            const userRecentRuns = allRuns.filter(run => {
+              const runDate = new Date(run.created_at);
+              return run.triggering_actor?.login === user && runDate > ONE_HOUR_AGO;
+            });
+  
+            // Limit: 5 runs per hour
+            if (userRecentRuns.length > 5) {
+              console.log(`User ${user} exceeded execution rate limit.`);
+  
+              if (context.issue.number) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: "⚠️ **Resource Protection Alert**\nYou have triggered too many workflow runs in a short period. This PR is auto-closed to conserve resources. Please wait an hour before retrying."
+                });
+  
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  state: 'closed'
+                });
+              }
+  
+              core.setFailed("Execution rate limit exceeded.");
+            }
+
+  validate-file-paths:
+    needs: check-rate-limit  # <--- FIX: PREVENTS DoS / RESOURCE EXHAUSTION
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Check Changed Files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // FIX: Paginate to ensure attackers cannot hide restricted files past the 30-file limit
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            // Define allowed regex: Must start with src/ or test/ and end with .java
+            // ONLY allow files within the examples namespace. 
+            // Blocks org.junit.*, java.lang.*, and other framework shadowing.
+            const allowedPattern = /^(src|test)\/.*\/com\/cognitionbox\/petra\/.*\.java$/;
+            
+            // Prevents overriding key security files by adding new implementation and changing import, by blanket ban of specific security filenames (ignores folder structure)
+            const restrictedFiles = ['PetraVerification.java', 'PetraVerificationSecurityGate.java', 'PetraInternalConfigValidator.java'];
+            
+            // Prevents overriding ANY other class hidden in the server dependency
+            const restrictedNamespace = /com\/cognitionbox\/petra\/ast\//;
+            
+            // Check for invalid paths OR attempts to shadow the verification base classes/namespaces
+            const invalidFiles = files.filter(file => 
+              !allowedPattern.test(file.filename) || 
+              restrictedFiles.some(f => file.filename.endsWith(f)) ||
+              restrictedNamespace.test(file.filename)
+            );
+            
+            if (invalidFiles.length > 0) {
+              const fileList = invalidFiles.map(f => `\`${f.filename}\``).join(', ');
+              const errorMessage = `⚠️ **Strict Policy Violation**\n\nThis repository only accepts changes to Java source files within \`src/\` and \`test/\` folders.\n\nOverriding core \`petra-verifier\` security classes or namespaces is strictly prohibited.\n\n\n**Invalid files found:**\n${fileList}`;
+
+              console.log("Invalid files detected:", invalidFiles.map(f => f.filename));
+
+              // Add a comment to the PR
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: errorMessage
+              });
+
+              // Optional: Close the PR automatically
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                state: 'closed'
+              });
+
+              core.setFailed("PR contains restricted file changes.");
+            } else {
+              console.log("All changed files are valid Java source/test files.");
+            }          
+
+  petra-verifier:
+    needs: validate-file-paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+            ref: ${{ inputs.ref || github.sha }}
+            fetch-depth: 0
+            allow-unsafe-pr-checkout: true
+            
+      - name: Fetch Trusted Base
+        # This makes sure the 'base' SHA is available to be 'resolved' by Git
+        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+
+      - name: Install XML and C++ Tools
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils g++
+        
+      - name: Verify POM Integrity
+        env:
+          GOLDEN_POLICY: |
+            // 1. Whitelist the Maven Cache (JUnit, Surefire Dependencies, Petra Framework)
+            // Includes triple-slash fallbacks for Linux CI symlink resolution
+            grant codeBase "file:${maven.repo.local}/-" {
+                permission java.security.AllPermission;
+            };
+            grant codeBase "file:///${maven.repo.local}/-" {
+                permission java.security.AllPermission;
+            };
+            
+            // 2. Whitelist Surefire Booter (The test orchestrator)
+            grant codeBase "file:${user.dir}/target/surefire/-" {
+                permission java.security.AllPermission;
+            };
+            grant codeBase "file:///${user.dir}/target/surefire/-" {
+                permission java.security.AllPermission;
+            };
+            
+            // 3. Dynamic Execution Engine (/tmp/)
+            grant codeBase "file:${java.io.tmpdir}/-" {
+                permission java.security.AllPermission;
+            };
+            grant codeBase "file:/tmp/-" {
+                permission java.security.AllPermission;
+            };
+            
+            // 4. The PR Sandbox (Baseline for the JDK Compiler & Untrusted Code)
+            grant {
+                permission java.util.PropertyPermission "*", "read";
+                
+                // Compiler needs to read JDK and Classpath
+                permission java.io.FilePermission "${java.home}/-", "read";
+                permission java.io.FilePermission "${maven.repo.local}/-", "read";                
+                permission java.io.FilePermission "${user.dir}/target/-", "read";
+                
+                // Compiler needs to write intermediate files
+                permission java.io.FilePermission "${java.io.tmpdir}/-", "read,write,delete";
+                permission java.io.FilePermission "/tmp/-", "read,write,delete";
+            };
+          GOLDEN_POM: |
+            <?xml version="1.0" encoding="UTF-8"?>
+            <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+              <modelVersion>4.0.0</modelVersion>
+            
+              <groupId>com.cognitionbox.petra.stdlib</groupId>
+              <artifactId>petra-stdlib</artifactId>
+              <version>0.0.0</version>
+              <build>
+                  <plugins>
+                      <plugin>
+                          <groupId>org.apache.maven.plugins</groupId>
+                          <artifactId>maven-compiler-plugin</artifactId>
+                          <configuration>
+                              <source>11</source>
+                              <target>11</target>
+                              <compilerArgument>-proc:none</compilerArgument>
+                          </configuration>
+                      </plugin>
+                       <plugin>
+                           <groupId>org.apache.maven.plugins</groupId>
+                           <artifactId>maven-surefire-plugin</artifactId>
+                           <version>3.2.5</version>
+                           <configuration>
+                               <includes>
+                                   <include>**/*Verification.java</include>
+                               </includes>
+                               <useManifestOnlyJar>false</useManifestOnlyJar>
+                           </configuration>
+                       </plugin>
+                  </plugins>
+              </build>
+            
+              <distributionManagement>
+                  <repository>
+                      <id>github</id>
+                      <name>GitHub Packages</name>
+                      <url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url>
+                      <releases>
+                        <enabled>true</enabled>
+                        <updatePolicy>always</updatePolicy>
+                    </releases>
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
+                  </repository>
+              </distributionManagement>
+            
+              <dependencies>
+                  <dependency>
+                     <groupId>com.cognitionbox.petra</groupId>
+                     <artifactId>petra-verifier</artifactId>
+                     <version>0.1.8</version>
+                   </dependency>
+                   <dependency>
+                      <groupId>com.fasterxml.jackson.core</groupId>
+                      <artifactId>jackson-databind</artifactId>
+                      <version>2.21.1</version>
+                  </dependency>
+              </dependencies>
+            
+            </project>
+        run: |
+          # 1. Verify Sandbox Policy Integrity
+          echo "$GOLDEN_POLICY" > expected_policy.xml
+          if ! diff -w -B -q expected_policy.xml .github/sandbox.policy > /dev/null; then
+            echo "❌ SECURITY ALERT: .github/sandbox.policy content mismatch."
+            exit 1
+          fi
+
+          echo "✅ Infrastructure Integrity Verified (POM & Security Policy)."
+
+          # 2. Verify POM Integrity
+          echo "$GOLDEN_POM" > expected_pom.xml
+
+          # Format XML into standard structural lines
+          xmllint --format pom.xml > normalized_current.xml
+          xmllint --format expected_pom.xml > normalized_expected.xml
+          
+          # Compare normalized XML ignoring leading/trailing spaces & empty lines (-w -B)
+          if ! diff -w -B -q normalized_expected.xml normalized_current.xml > /dev/null; then
+            echo "❌ SECURITY ALERT: pom.xml content mismatch."
+            echo "--- Diff (Expected vs Actual) ---"
+            diff -w -B normalized_expected.xml normalized_current.xml || true
+            exit 1
+          fi
+          
+          echo "✅ Infrastructure Integrity Verified."
+        
+
+      - name: Set up JDK & Cache
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Maven Build
+        env:
+          PMDT: ${{ secrets.PMDT }}
+        run: |
+          mkdir -p ~/.m2
+          
+          # 1. Create settings.xml WITH the token
+          cat <<EOF > ~/.m2/settings.xml
+          <settings>
+            <profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url></repository></repositories></profile></profiles>
+            <activeProfiles><activeProfile>github</activeProfile></activeProfiles>
+            <servers><server><id>github</id><username>petracode-labs</username><password>${PMDT}</password></server></servers>
+          </settings>
+          EOF
+          
+          # 2. Fetch dependencies and compile
+          mvn -ntp -B -U clean test-compile
+          
+          # 3. SECURE & SIMPLIFY: Overwrite settings.xml to drop the <servers> block (the token).
+          # Leaving the <repository> block intact satisfies Maven's cache tracker so we don't need offline mode.
+          cat <<EOF > ~/.m2/settings.xml
+          <settings>
+            <profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url></repository></repositories></profile></profiles>
+            <activeProfiles><activeProfile>github</activeProfile></activeProfiles>
+          </settings>
+          EOF
+          unset PMDT
+
+          # 4. EXECUTING THE SECURITY GATE (PRE-TEST)
+          # This scans all PR code for malicious payloads, File I/O, and static blocks.
+          # If it fails, it halts the workflow before the untrusted code is ever executed!
+          mvn exec:java -Dexec.mainClass="com.cognitionbox.petra.ast.interp.PetraVerificationSecurityGate" -Dexec.classpathScope=test
+          
+          # 5. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
+          mvn -ntp -B test \
+            -DargLine="-Djava.security.manager -Djava.security.policy==.github/sandbox.policy -Dmaven.repo.local=\${settings.localRepository}" \
+            -DGIT_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+            -Dincludes="**/*Verification.java"
+          
+      - name: Test Summary
+        uses: test-summary/action@v2
+        with:
+          # This catches the XML that now contains the logs
+          paths: "**/target/*-reports/TEST-*.xml"
+          show: "all" # Shows logs for passed and failed tests
+        if: always()
