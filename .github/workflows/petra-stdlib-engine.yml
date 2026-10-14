@@ -138,7 +138,7 @@ jobs:
             const restrictedFiles = ['PetraVerification.java', 'PetraVerificationSecurityGate.java', 'PetraInternalConfigValidator.java'];
             
             // Prevents overriding ANY other class hidden in the server dependency
-            const restrictedNamespace = /com\/cognitionbox\/petra\/ast\//;
+            const restrictedNamespace = /com\/cognitionbox\/petra\//;
             
             // Check for invalid paths OR attempts to shadow the verification base classes/namespaces
             const invalidFiles = files.filter(file => 
