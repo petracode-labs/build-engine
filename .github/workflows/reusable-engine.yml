@@ -122,6 +122,11 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            if (context.eventName !== 'pull_request' && context.eventName !== 'pull_request_target') {
+              console.log("Not a PR event. Skipping file validation.");
+              return;
+            }
+            
             // FIX: Paginate to ensure attackers cannot hide restricted files past the 30-file limit
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
@@ -187,7 +192,7 @@ jobs:
             
       - name: Fetch Trusted Base
         # This makes sure the 'base' SHA is available to be 'resolved' by Git
-        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+        run: git fetch origin ${{ github.event.pull_request.base.ref || github.ref }}
 
       - name: Install XML and C++ Tools
         run: sudo apt-get update && sudo apt-get install -y libxml2-utils g++
@@ -367,7 +372,7 @@ jobs:
           # 5. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
           mvn -ntp -B test \
             -DargLine="-Djava.security.manager -Djava.security.policy==.github/sandbox.policy -Dmaven.repo.local=\${settings.localRepository}" \
-            -DGIT_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+            -DGIT_BASE_SHA="${{ github.event.pull_request.base.sha || github.sha }}" \
             -Dincludes="**/*Verification.java"
           
       - name: Test Summary
