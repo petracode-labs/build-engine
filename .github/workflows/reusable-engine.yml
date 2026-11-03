@@ -182,7 +182,7 @@ jobs:
   petra-verifier:
     needs: validate-file-paths
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
         with:
@@ -351,11 +351,11 @@ jobs:
           </settings>
           EOF
           
-          # 2. Fetch dependencies and compile
-          mvn -ntp -B -U clean test-compile
+          # 2. Fetch dependencies OFFLINE FIRST.
+          # No compilation happens here, preventing static{} block execution while the token exists on disk.
+          mvn -ntp -B -U dependency:go-offline
           
-          # 3. SECURE & SIMPLIFY: Overwrite settings.xml to drop the <servers> block (the token).
-          # Leaving the <repository> block intact satisfies Maven's cache tracker so we don't need offline mode.
+          # 3. SECURE & DESTROY: Overwrite settings.xml to drop the <servers> block.
           cat <<EOF > ~/.m2/settings.xml
           <settings>
             <profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url></repository></repositories></profile></profiles>
@@ -364,14 +364,17 @@ jobs:
           EOF
           unset PMDT
 
-          # 4. EXECUTING THE SECURITY GATE (PRE-TEST)
+          # 4. Compile safely. The token is completely gone from the environment before arbitrary PR code compiles.
+          mvn -ntp -B clean test-compile
+
+          # 5. EXECUTING THE SECURITY GATE (PRE-TEST)
           # This scans all PR code for malicious payloads, File I/O, and static blocks.
-          # If it fails, it halts the workflow before the untrusted code is ever executed!
           mvn exec:java -Dexec.mainClass="com.cognitionbox.petra.ast.interp.PetraVerificationSecurityGate" -Dexec.classpathScope=test
           
-          # 5. Run tests naturally. Private deps are loaded from the cache; public test plugins download freely from Central.
+          # 6. Run tests with hardened JDK 17 arguments.
+          # Added -XX:+DisableAttachMechanism to prevent malicious PR tests from circumventing the Security Manager dynamically.
           mvn -ntp -B test \
-            -DargLine="-Djava.security.manager -Djava.security.policy==.github/sandbox.policy -Dmaven.repo.local=\${settings.localRepository}" \
+            -DargLine="-Djava.security.manager -Djava.security.policy==.github/sandbox.policy -Dmaven.repo.local=\${settings.localRepository} -XX:+DisableAttachMechanism" \
             -DGIT_BASE_SHA="${{ github.event.pull_request.base.sha || github.sha }}" \
             -Dincludes="**/*Verification.java"
           
