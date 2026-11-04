@@ -343,11 +343,32 @@ jobs:
           mkdir -p ~/.m2
           
           # 1. Create settings.xml WITH the token
+          # Priority Repository Ordering: Repositories defined in active profiles are queried BEFORE Maven Central.
           cat <<EOF > ~/.m2/settings.xml
           <settings>
-            <profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url></repository></repositories></profile></profiles>
-            <activeProfiles><activeProfile>github</activeProfile></activeProfiles>
-            <servers><server><id>github</id><username>petracode-labs</username><password>${PMDT}</password></server></servers>
+            <servers>
+              <server>
+                <id>github-primary</id>
+                <username>petracode-labs</username>
+                <password>${PMDT}</password>
+              </server>
+            </servers>
+            <profiles>
+              <profile>
+                <id>github-priority</id>
+                <repositories>
+                  <repository>
+                    <id>github-primary</id>
+                    <url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+            <activeProfiles>
+              <activeProfile>github-priority</activeProfile>
+            </activeProfiles>
           </settings>
           EOF
           
@@ -358,8 +379,20 @@ jobs:
           # 3. SECURE & DESTROY: Overwrite settings.xml to drop the <servers> block.
           cat <<EOF > ~/.m2/settings.xml
           <settings>
-            <profiles><profile><id>github</id><repositories><repository><id>github</id><url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url></repository></repositories></profile></profiles>
-            <activeProfiles><activeProfile>github</activeProfile></activeProfiles>
+            <profiles>
+              <profile>
+                <id>github-priority</id>
+                <repositories>
+                  <repository>
+                    <id>github-primary</id>
+                    <url>https://maven.pkg.github.com/petracode-labs/petra-verifier</url>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+            <activeProfiles>
+              <activeProfile>github-priority</activeProfile>
+            </activeProfiles>
           </settings>
           EOF
           unset PMDT
